@@ -14,10 +14,9 @@ public static class FetchDataFunction
     public static async Task Run(
         [TimerTrigger("0 */1 * * * *")] TimerInfo myTimer,
         [Table("WeatherLogs")] IAsyncCollector<WeatherLogEntry> tableCollector,
-        [Blob("weather-data/{DateTime}.json", FileAccess.Write)] Stream blobOutput,
+        Binder binder,
         ILogger log)
     {
-        // Hämta API-nyckel från konfiguration
         var apiKey = Environment.GetEnvironmentVariable("OpenWeatherMapApiKey");
         if (string.IsNullOrEmpty(apiKey))
         {
@@ -29,25 +28,31 @@ public static class FetchDataFunction
 
         try
         {
-            var response = await client.GetAsync($"{openWeatherUrl}");
+            var RowKey = Guid.NewGuid().ToString();
+            var response = await client.GetAsync(openWeatherUrl);
             var content = await response.Content.ReadAsStringAsync();
+
+            var blobAttribute = new BlobAttribute($"weather-data/{RowKey}.json", FileAccess.Write);
+            using (var blobOutput = await binder.BindAsync<Stream>(blobAttribute))
+            {
+                using (var writer = new StreamWriter(blobOutput))
+                {
+                    await writer.WriteAsync(content);
+                }
+            }
 
             var logEntry = new WeatherLogEntry
             {
-                PartitionKey = DateTime.UtcNow.ToString("yyyyMMdd"),
-                RowKey = Guid.NewGuid().ToString(),
-                Timestamp = DateTime.UtcNow,
+                PartitionKey = "London",
+                RowKey = RowKey,
                 Status = response.IsSuccessStatusCode ? "Success" : "Failed",
                 StatusCode = (int)response.StatusCode,
-                City = "London"
+                BlobPath = $"weather-data/{RowKey}.json"
             };
 
             await tableCollector.AddAsync(logEntry);
 
-            using (var writer = new StreamWriter(blobOutput))
-            {
-                await writer.WriteAsync(content);
-            }
+            log.LogInformation($"Successfully saved weather data with BlobId: {RowKey}");
         }
         catch (Exception ex)
         {
@@ -60,10 +65,9 @@ public class WeatherLogEntry : ITableEntity
 {
     public string PartitionKey { get; set; }
     public string RowKey { get; set; }
-    public DateTimeOffset? Timestamp { get; set; }
     public Azure.ETag ETag { get; set; }
-    public string City { get; set; }
+    public DateTimeOffset? Timestamp { get; set; }
     public string Status { get; set; }
     public int? StatusCode { get; set; }
-    public string ErrorMessage { get; set; }
+    public string BlobPath { get; set; }
 }

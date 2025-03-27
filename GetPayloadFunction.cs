@@ -7,56 +7,85 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 using Azure.Data.Tables;
 using Azure.Storage.Blobs;
+using System.IO;
+using Azure;
 
 public static class GetPayloadFunction
 {
     [FunctionName("GetPayload")]
     public static async Task<IActionResult> Run(
-        [HttpTrigger(AuthorizationLevel.Function, "get", Route = null)] HttpRequest req,
+        [HttpTrigger(AuthorizationLevel.Function, "get", Route = "payload/{RowKey?}")] HttpRequest req,
+        string RowKey,
         ILogger log)
     {
-        log.LogInformation("Getting weather payload.");
+        log.LogInformation($"Fetching weather payload for RowKey: {RowKey}");
 
-        string logId = req.Query["logId"];
-        if (string.IsNullOrEmpty(logId))
+        if (string.IsNullOrEmpty(RowKey))
         {
-            return new BadRequestObjectResult("Please provide a 'logId' parameter.");
+            return new BadRequestObjectResult("Please provide a RowKey in the URL path (/payload/{RowKey})");
+        }
+
+        if (!Guid.TryParse(RowKey, out _))
+        {
+            return new BadRequestObjectResult("RowKey must be a valid GUID format");
         }
 
         try
         {
-            var tableClient = new TableServiceClient(Environment.GetEnvironmentVariable("AzureWebJobsStorage"));
-            var table = tableClient.GetTableClient("WeatherLogs");
+            var tableClient = new TableClient(
+                Environment.GetEnvironmentVariable("AzureWebJobsStorage"),
+                "WeatherLogs");
 
-            // Get the log entry
-            var logEntry = await table.GetEntityAsync<WeatherLogEntry>("partitionKey", logId);
-            if (logEntry == null)
+            WeatherLogEntry logEntry;
+            try
             {
-                return new NotFoundObjectResult($"Log entry with ID {logId} not found.");
+                var response = await tableClient.GetEntityAsync<WeatherLogEntry>("London", RowKey);
+                logEntry = response.Value;
+            }
+            catch (RequestFailedException ex) when (ex.Status == 404)
+            {
+                return new NotFoundObjectResult($"No weather log found with RowKey: {RowKey}");
             }
 
-            // Get the blob content
-            var blobServiceClient = new BlobServiceClient(Environment.GetEnvironmentVariable("AzureWebJobsStorage"));
-            var containerClient = blobServiceClient.GetBlobContainerClient("weather-data");
+            if (string.IsNullOrEmpty(logEntry.BlobPath))
+            {
+                return new NotFoundObjectResult($"Weather log with RowKey {RowKey} has no associated blob reference");
+            }
 
-            // Assuming blob name is based on timestamp
-            var blobName = $"{logEntry.Value.Timestamp:yyyyMMddHHmmss}.json";
-            var blobClient = containerClient.GetBlobClient(blobName);
+            var blobClient = new BlobClient(
+                Environment.GetEnvironmentVariable("AzureWebJobsStorage"),
+                "weather-data",
+                $"{RowKey}.json");
 
             if (!await blobClient.ExistsAsync())
             {
-                return new NotFoundObjectResult($"Payload not found for log ID {logId}");
+                return new NotFoundObjectResult($"Weather data blob not found for RowKey: {RowKey}");
             }
 
-            var response = await blobClient.DownloadContentAsync();
-            var content = response.Value.Content.ToString();
+            try
+            {
+                var response = await blobClient.DownloadAsync();
+                using var streamReader = new StreamReader(response.Value.Content);
+                var content = await streamReader.ReadToEndAsync();
 
-            return new OkObjectResult(content);
+                return new OkObjectResult(content);
+            }
+            catch (RequestFailedException ex)
+            {
+                log.LogError(ex, $"Blob download failed for RowKey: {RowKey}");
+                return new ObjectResult($"Failed to retrieve weather data: {ex.Message}")
+                {
+                    StatusCode = 500
+                };
+            }
         }
         catch (Exception ex)
         {
-            log.LogError(ex, "Error retrieving payload");
-            return new StatusCodeResult(500);
+            log.LogError(ex, $"Unexpected error processing request for RowKey: {RowKey}");
+            return new ObjectResult("An unexpected error occurred. Please try again later.")
+            {
+                StatusCode = 500
+            };
         }
     }
 }
