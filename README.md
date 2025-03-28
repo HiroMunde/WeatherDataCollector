@@ -14,6 +14,9 @@ local.settings.json is in git ignore so you'll need too create it
 The app has only been tested with Azurite emulator for local Azure Storage development, altough in theory it should work with in-cloud Azure Storage. To run it locally, install Azurite.
 https://learn.microsoft.com/en-us/azure/storage/common/storage-use-azurite?tabs=visual-studio%2Cblob-storage
 
+Start Azurite with the following command
+azurite --location c:\azurite
+
 To build the app, navigate to the project root and run the following in CMD
 dotnet clean
 dotnet build
