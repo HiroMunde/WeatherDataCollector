@@ -24,9 +24,12 @@ Start Azurite with the following command
 `azurite --location c:\azurite`
 
 To build the app, navigate to the project root and run the following in CMD
+
+```
 dotnet clean
 dotnet build
 func start
+```
 
 To retrieve logs
 
