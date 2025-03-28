@@ -15,10 +15,11 @@ public static class GetLogsFunction
     [FunctionName("GetLogs")]
     public static async Task<IActionResult> Run(
         [HttpTrigger(AuthorizationLevel.Function, "get", Route = "logs")] HttpRequest req,
-        ILogger log)
+        ILogger log,
+        [Table("WeatherLogs")] TableClient tableClient)
     {
         log.LogInformation("GetLogs function processing request.");
- 
+
         if (!req.Query.TryGetValue("from", out var fromDateStr) ||
             !req.Query.TryGetValue("to", out var toDateStr))
         {
@@ -38,10 +39,6 @@ public static class GetLogsFunction
 
         try
         {
-            var tableClient = new TableClient(
-                Environment.GetEnvironmentVariable("AzureWebJobsStorage"),
-                "WeatherLogs");
-
             var filter =
                 $"PartitionKey eq 'London' and Timestamp ge datetime'{fromDate:o}' and Timestamp le datetime'{toDate:o}'";
 
@@ -56,7 +53,7 @@ public static class GetLogsFunction
             var result = new
             {
                 City = "London",
-                Count = logs.Count,
+                logs.Count,
                 FromDate = fromDate,
                 ToDate = toDate,
                 Logs = logs.OrderBy(l => l.Timestamp)

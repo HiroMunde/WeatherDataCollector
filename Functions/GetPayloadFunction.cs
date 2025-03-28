@@ -1,14 +1,12 @@
-﻿using System;
-using System.Threading.Tasks;
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.Azure.WebJobs;
+﻿using Microsoft.AspNetCore.Mvc;
 using Microsoft.Azure.WebJobs.Extensions.Http;
-using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
-using Azure.Data.Tables;
 using Azure.Storage.Blobs;
+using System.Threading.Tasks;
 using System.IO;
-using Azure;
+using Microsoft.AspNetCore.Http;
+using Microsoft.Azure.WebJobs;
+using System;
 
 public static class GetPayloadFunction
 {
@@ -16,76 +14,49 @@ public static class GetPayloadFunction
     public static async Task<IActionResult> Run(
         [HttpTrigger(AuthorizationLevel.Function, "get", Route = "payload/{RowKey?}")] HttpRequest req,
         string RowKey,
+        [Table("WeatherLogs", "London", "{RowKey}")] WeatherLogEntry logEntry,
         ILogger log)
     {
         log.LogInformation($"Fetching weather payload for RowKey: {RowKey}");
 
         if (string.IsNullOrEmpty(RowKey))
-        {
             return new BadRequestObjectResult("Please provide a RowKey in the URL path (/payload/{RowKey})");
-        }
 
         if (!Guid.TryParse(RowKey, out _))
-        {
             return new BadRequestObjectResult("RowKey must be a valid GUID format");
-        }
+
+        if (logEntry == null)
+            return new NotFoundObjectResult($"No weather log found with RowKey: {RowKey}");
+
+        if (string.IsNullOrWhiteSpace(logEntry.BlobPath))
+            return new NotFoundObjectResult($"Weather log with RowKey {RowKey} has no associated blob reference");
 
         try
         {
-            var tableClient = new TableClient(
-                Environment.GetEnvironmentVariable("AzureWebJobsStorage"),
-                "WeatherLogs");
+            var connectionString = Environment.GetEnvironmentVariable("AzureWebJobsStorage");
 
-            WeatherLogEntry logEntry;
-            try
-            {
-                var response = await tableClient.GetEntityAsync<WeatherLogEntry>("London", RowKey);
-                logEntry = response.Value;
-            }
-            catch (RequestFailedException ex) when (ex.Status == 404)
-            {
-                return new NotFoundObjectResult($"No weather log found with RowKey: {RowKey}");
-            }
+            var parts = logEntry.BlobPath.Split('/', 2, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length != 2)
+                return new BadRequestObjectResult($"Invalid BlobPath format: {logEntry.BlobPath}");
 
-            if (string.IsNullOrEmpty(logEntry.BlobPath))
-            {
-                return new NotFoundObjectResult($"Weather log with RowKey {RowKey} has no associated blob reference");
-            }
+            var containerName = parts[0];
+            var blobName = parts[1];
 
-            var blobClient = new BlobClient(
-                Environment.GetEnvironmentVariable("AzureWebJobsStorage"),
-                "weather-data",
-                $"{RowKey}.json");
+            var blobClient = new BlobClient(connectionString, containerName, blobName);
 
             if (!await blobClient.ExistsAsync())
-            {
-                return new NotFoundObjectResult($"Weather data blob not found for RowKey: {RowKey}");
-            }
+                return new NotFoundObjectResult($"Blob not found at path: {logEntry.BlobPath}");
 
-            try
-            {
-                var response = await blobClient.DownloadAsync();
-                using var streamReader = new StreamReader(response.Value.Content);
-                var content = await streamReader.ReadToEndAsync();
+            var response = await blobClient.DownloadStreamingAsync();
+            using var reader = new StreamReader(response.Value.Content);
+            var content = await reader.ReadToEndAsync();
 
-                return new OkObjectResult(content);
-            }
-            catch (RequestFailedException ex)
-            {
-                log.LogError(ex, $"Blob download failed for RowKey: {RowKey}");
-                return new ObjectResult($"Failed to retrieve weather data: {ex.Message}")
-                {
-                    StatusCode = 500
-                };
-            }
+            return new OkObjectResult(content);
         }
         catch (Exception ex)
         {
-            log.LogError(ex, $"Unexpected error processing request for RowKey: {RowKey}");
-            return new ObjectResult("An unexpected error occurred. Please try again later.")
-            {
-                StatusCode = 500
-            };
+            log.LogError(ex, "Failed to retrieve payload");
+            return new ObjectResult("Failed to retrieve weather data") { StatusCode = 500 };
         }
     }
 }
